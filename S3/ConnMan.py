@@ -12,6 +12,7 @@ class http_connection(object):
     def __init__(self, id, hostname, ssl, cfg):
         self.hostname = hostname
         self.ssl = ssl
+        self.reuse = cfg.conn_reuse
         self.id = id
         self.counter = 0
         if cfg.proxy_host != "":
@@ -54,6 +55,10 @@ class ConnMan(object):
 
     @staticmethod
     def put(conn):
+        if not conn.reuse:
+            # configuration option conn_reuse
+            conn.c.close()
+            return
         if conn.id.startswith("proxy://"):
             conn.c.close()
             debug("ConnMan.put(): closing proxy connection (keep-alive not yet supported)")

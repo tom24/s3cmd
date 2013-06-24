@@ -26,6 +26,7 @@ import socket
 import shutil
 import tempfile
 import S3.Exceptions
+import pwd, grp
 
 from copy import copy
 from optparse import OptionParser, Option, OptionValueError, IndentedHelpFormatter
@@ -433,6 +434,7 @@ def cmd_object_get(args):
         return
 
     seq = 0
+    chown_error_reported = False
     for key in remote_list:
         seq += 1
         item = remote_list[key]
@@ -488,6 +490,45 @@ def cmd_object_get(args):
         if response["headers"].has_key("x-amz-meta-s3tools-gpgenc"):
             gpg_decrypt(destination, response["headers"]["x-amz-meta-s3tools-gpgenc"])
             response["size"] = os.stat(destination)[6]
+        if (Config().preserve_attrs and destination != "-"):
+            if response.has_key("s3cmd-attrs"):
+                attrs = response['s3cmd-attrs']
+                if attrs.has_key('mode'):
+                    os.chmod(destination, int(attrs['mode']))
+                if attrs.has_key('mtime') or attrs.has_key('atime'):
+                    mtime = attrs.has_key('mtime') and int(attrs['mtime']) or int(time.time())
+                    atime = attrs.has_key('atime') and int(attrs['atime']) or int(time.time())
+                    os.utime(destination, (atime, mtime))
+                # handle the user and group
+                #
+                # if there is a attrs['uname'] account on the system:
+                #  chown arg is the uid assoicated with system uname (and ignore attrs['uid'])
+                # else:
+                #  chown arg is attrs['uid']
+                #
+                # do the same for gid/gname
+                try:
+                    uid = pwd.getpwnam(attrs['uname']).pw_uid
+                except KeyError:
+                    try:
+                        uid = int(attrs['uid'])
+                    except KeyError:
+                        uid = -1
+                try:
+                    gid = grp.getgrnam(attrs['gname']).gr_gid
+                except KeyError:
+                    try:
+                        gid = int(attrs['gid'])
+                    except KeyError:
+                        gid = -1
+                try:
+                    os.chown(destination, uid, gid)
+                except OSError, e:
+                    if e.errno == 1 and not chown_error_reported:
+                        warning("Insufficient privileges to change user/owner - consider sudo" )
+                        chown_error_reported = True
+            else:
+                warning("No attribute data for %s" % (destination,))
         if not Config().progress_meter and destination != "-":
             speed_fmt = formatSize(response["speed"], human_readable = True, floating_point = True)
             output(u"File %s saved as '%s' (%d bytes in %0.1f seconds, %0.2f %sB/s)" %
@@ -1001,7 +1042,6 @@ def remote_copy(s3, copy_pairs, destination_base):
     return (len(copy_pairs), saved_bytes)
 
 def _build_attr_header(local_list, src):
-    import pwd, grp
     attrs = {}
     for attr in cfg.preserve_attrs_list:
         if attr == 'uname':
